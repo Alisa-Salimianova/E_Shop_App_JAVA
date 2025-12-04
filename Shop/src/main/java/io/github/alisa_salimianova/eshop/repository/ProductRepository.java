@@ -2,60 +2,43 @@ package io.github.alisa_salimianova.eshop.repository;
 
 import io.github.alisa_salimianova.eshop.model.entity.Product;
 import io.github.alisa_salimianova.eshop.model.enums.Category;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
 
-import java.util.ArrayList;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 
-public class ProductRepository {
-    private final List<Product> products;
-    private final AtomicInteger idCounter;
+@Repository
+public interface ProductRepository extends JpaRepository<Product, Long> {
 
-    public ProductRepository() {
-        this.products = new ArrayList<>();
-        this.idCounter = new AtomicInteger(1);
-        initializeSampleProducts();
-    }
+    List<Product> findByCategory(Category category);
 
-    private void initializeSampleProducts() {
-        // Избегание магических чисел: константы для цен
-        save(new Product(idCounter.getAndIncrement(), "iPhone 15",
-                "Смартфон Apple", 999.99, Category.ELECTRONICS, "Apple"));
-        save(new Product(idCounter.getAndIncrement(), "Футболка",
-                "Хлопковая футболка", 19.99, Category.CLOTHING, "Nike"));
-        save(new Product(idCounter.getAndIncrement(), "Java Head First",
-                "Книга по Java", 39.99, Category.BOOKS, "O'Reilly"));
-        save(new Product(idCounter.getAndIncrement(), "Фитнес-браслет",
-                "Умный браслет", 49.99, Category.SPORTS, "Xiaomi"));
-        save(new Product(idCounter.getAndIncrement(), "Кофемашина",
-                "Автоматическая кофемашина", 299.99, Category.HOME, "Philips"));
-        save(new Product(idCounter.getAndIncrement(), "Ноутбук",
-                "Игровой ноутбук", 1299.99, Category.ELECTRONICS, "ASUS"));
-        save(new Product(idCounter.getAndIncrement(), "Джинсы",
-                "Классические джинсы", 59.99, Category.CLOTHING, "Levi's"));
-        save(new Product(idCounter.getAndIncrement(), "Чистый код",
-                "Книга Роберта Мартина", 29.99, Category.BOOKS, "Prentice Hall"));
-    }
+    Page<Product> findByCategory(Category category, Pageable pageable);
 
-    public List<Product> findAll() {
-        return new ArrayList<>(products);
-    }
+    Page<Product> findByPriceBetween(BigDecimal minPrice, BigDecimal maxPrice, Pageable pageable);
 
-    public Optional<Product> findById(int id) {
-        return products.stream()
-                .filter(product -> product.getId() == id)
-                .findFirst();
-    }
+    List<Product> findByNameContainingIgnoreCase(String name);
 
-    public List<Product> findByCategory(Category category) {
-        return products.stream()
-                .filter(product -> product.getCategory() == category)
-                .collect(Collectors.toList());
-    }
+    @Query("SELECT p FROM Product p WHERE p.rating >= :minRating AND p.active = true")
+    List<Product> findHighlyRatedProducts(@Param("minRating") Double minRating);
 
-    public void save(Product product) {
-        products.add(product);
-    }
+    Optional<Product> findBySku(String sku);
+
+    List<Product> findByActiveTrue();
+
+    Page<Product> findByActiveTrue(Pageable pageable);
+
+    @Query("SELECT p FROM Product p WHERE p.price <= :maxPrice AND p.active = true")
+    List<Product> findProductsUnderPrice(@Param("maxPrice") BigDecimal maxPrice);
+
+    @Query("SELECT p FROM Product p WHERE p.stockQuantity > 0 AND p.active = true")
+    List<Product> findAvailableProducts();
+
+    @Query("SELECT p FROM Product p WHERE p.id IN :ids")
+    List<Product> findByIdIn(@Param("ids") List<Long> ids);
 }

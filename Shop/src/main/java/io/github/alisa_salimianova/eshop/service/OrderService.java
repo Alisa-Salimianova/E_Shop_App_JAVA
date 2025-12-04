@@ -1,99 +1,169 @@
 package io.github.alisa_salimianova.eshop.service;
 
+import io.github.alisa_salimianova.eshop.dto.request.CreateOrderRequest;
+import io.github.alisa_salimianova.eshop.dto.response.OrderResponse;
+import io.github.alisa_salimianova.eshop.exception.InsufficientStockException;
+import io.github.alisa_salimianova.eshop.exception.ResourceNotFoundException;
+import io.github.alisa_salimianova.eshop.mapper.OrderMapper;
 import io.github.alisa_salimianova.eshop.model.entity.Order;
 import io.github.alisa_salimianova.eshop.model.entity.Product;
 import io.github.alisa_salimianova.eshop.model.entity.User;
 import io.github.alisa_salimianova.eshop.model.enums.OrderStatus;
 import io.github.alisa_salimianova.eshop.repository.OrderRepository;
+import io.github.alisa_salimianova.eshop.repository.ProductRepository;
 import io.github.alisa_salimianova.eshop.repository.UserRepository;
-import io.github.alisa_salimianova.eshop.service.interfaces.PaymentStrategy;
 import io.github.alisa_salimianova.eshop.service.interfaces.DeliveryStrategy;
+import io.github.alisa_salimianova.eshop.service.interfaces.PaymentStrategy;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
+@Service
+@RequiredArgsConstructor
+@Slf4j
 public class OrderService {
+
     private final OrderRepository orderRepository;
     private final UserRepository userRepository;
+    private final ProductRepository productRepository;
+    private final OrderMapper orderMapper;
 
-    public OrderService(OrderRepository orderRepository, UserRepository userRepository) {
-        this.orderRepository = orderRepository;
-        this.userRepository = userRepository;
+    @Transactional
+    public OrderResponse createOrder(CreateOrderRequest request,
+                                     PaymentStrategy paymentStrategy,
+                                     DeliveryStrategy deliveryStrategy) {
+
+        User user = userRepository.findById(request.getUserId())
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+        // Extract product IDs and quantities
+        Map<Long, Integer> productQuantities = request.getItems().stream()
+                .collect(Collectors.toMap(
+                        CreateOrderRequest.OrderItem::getProductId,
+                        CreateOrderRequest.OrderItem::getQuantity
+                ));
+
+        List<Product> products = productRepository.findAllById(productQuantities.keySet());
+
+        if (products.size() != productQuantities.size()) {
+            throw new ResourceNotFoundException("Some products not found");
+        }
+
+        // Check stock availability
+        products.forEach(product -> {
+            Integer requestedQuantity = productQuantities.get(product.getId());
+            if (product.getStockQuantity() < requestedQuantity) {
+                throw new InsufficientStockException(
+                        String.format("Insufficient stock for product: %s. Available: %d, Requested: %d",
+                                product.getName(), product.getStockQuantity(), requestedQuantity)
+                );
+            }
+        });
+
+        // Calculate totals
+        BigDecimal itemsTotal = products.stream()
+                .map(product -> {
+                    Integer quantity = productQuantities.get(product.getId());
+                    return product.getPrice().multiply(BigDecimal.valueOf(quantity));
+                })
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal deliveryCost = BigDecimal.valueOf(deliveryStrategy.calculateDeliveryCost(itemsTotal.doubleValue()));
+        BigDecimal discountAmount = calculateDiscount(itemsTotal, user);
+        BigDecimal finalAmount = itemsTotal.add(deliveryCost).subtract(discountAmount);
+
+        // Process payment
+        if (!paymentStrategy.processPayment(finalAmount.doubleValue())) {
+            throw new RuntimeException("Payment processing failed");
+        }
+
+        // Create order
+        Order order = Order.builder()
+                .user(user)
+                .totalAmount(itemsTotal)
+                .discountAmount(discountAmount)
+                .finalAmount(finalAmount)
+                .shippingAddress(request.getShippingAddress())
+                .paymentMethod(paymentStrategy.getPaymentMethodName())
+                .deliveryMethod(deliveryStrategy.getDeliveryMethodName())
+                .build();
+
+        // Add order items
+        products.forEach(product -> {
+            Integer quantity = productQuantities.get(product.getId());
+            Order.OrderItem item = Order.OrderItem.builder()
+                    .order(order)
+                    .product(product)
+                    .quantity(quantity)
+                    .unitPrice(product.getPrice())
+                    .build();
+            order.getItems().add(item);
+
+            // Update stock
+            product.reduceStock(quantity);
+        });
+
+        Order savedOrder = orderRepository.save(order);
+        productRepository.saveAll(products);
+
+        log.info("Order created successfully: {} for user: {}",
+                savedOrder.getId(), user.getEmail());
+
+        return orderMapper.toResponse(savedOrder);
     }
 
-    public Order createOrder(int userId, PaymentStrategy paymentStrategy, DeliveryStrategy deliveryStrategy) {
+    @Transactional(readOnly = true)
+    public List<OrderResponse> getUserOrders(Long userId) {
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalArgumentException("Пользователь не найден"));
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
-        List<Product> cart = user.getCart();
-        if (cart.isEmpty()) {
-            throw new IllegalStateException("Корзина пуста");
-        }
-
-        double orderAmount = user.getCartTotal();
-        double deliveryCost = deliveryStrategy.calculateDeliveryCost(orderAmount);
-        double totalAmount = orderAmount + deliveryCost;
-
-        // Обработка платежа
-        if (!paymentStrategy.processPayment(totalAmount)) {
-            throw new IllegalStateException("Ошибка обработки платежа");
-        }
-
-        // Создание заказа
-        Order order = new Order(orderRepository.getNextId(), user, cart);
-        orderRepository.save(order);
-
-        // Очистка корзины и добавление в историю заказов
-        user.clearCart();
-        user.addOrder(order);
-
-        System.out.printf("Заказ создан! Номер: #%d, Сумма: $%.2f (доставка: $%.2f)%n",
-                order.getId(), orderAmount, deliveryCost);
-        System.out.printf("Способ доставки: %s (%d дней)%n",
-                deliveryStrategy.getDeliveryMethodName(), deliveryStrategy.getDeliveryDays());
-
-        return order;
+        return orderRepository.findByUser(user).stream()
+                .map(orderMapper::toResponse)
+                .collect(Collectors.toList());
     }
 
-    public Order repeatOrder(int orderId, int userId) {
-        Order originalOrder = orderRepository.findById(orderId)
-                .orElseThrow(() -> new IllegalArgumentException("Заказ не найден"));
-
-        if (originalOrder.getUser().getId() != userId) {
-            throw new IllegalArgumentException("Это не ваш заказ");
-        }
-
-        User user = userRepository.findById(userId).get();
-        List<Product> products = originalOrder.getProducts();
-
-        // Добавляем товары в корзину
-        products.forEach(user::addToCart);
-
-        return originalOrder;
-    }
-
-    public void cancelOrder(int orderId, int userId) {
+    @Transactional
+    public void cancelOrder(Long orderId, Long userId) {
         Order order = orderRepository.findById(orderId)
-                .orElseThrow(() -> new IllegalArgumentException("Заказ не найден"));
+                .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
 
-        if (order.getUser().getId() != userId) {
-            throw new IllegalArgumentException("Это не ваш заказ");
+        if (!order.getUser().getId().equals(userId)) {
+            throw new SecurityException("You are not authorized to cancel this order");
         }
 
         if (order.getStatus() == OrderStatus.DELIVERED) {
-            throw new IllegalStateException("Нельзя отменить доставленный заказ");
+            throw new IllegalStateException("Cannot cancel delivered order");
         }
 
+        // Restore stock
+        order.getItems().forEach(item -> {
+            Product product = item.getProduct();
+            product.increaseStock(item.getQuantity());
+            productRepository.save(product);
+        });
+
         order.setStatus(OrderStatus.CANCELLED);
-        System.out.println("Заказ #" + orderId + " отменен");
+        orderRepository.save(order);
+
+        log.info("Order cancelled: {}", orderId);
     }
 
-    public List<Order> getUserOrders(int userId) {
-        return orderRepository.findByUserId(userId);
-    }
+    private BigDecimal calculateDiscount(BigDecimal amount, User user) {
+        // Simple discount logic
+        long orderCount = orderRepository.countByUser(user);
 
-    public void updateOrderStatus(int orderId, OrderStatus status) {
-        Order order = orderRepository.findById(orderId)
-                .orElseThrow(() -> new IllegalArgumentException("Заказ не найден"));
-        order.setStatus(status);
+        if (orderCount >= 10) {
+            return amount.multiply(BigDecimal.valueOf(0.10)); // 10% discount
+        } else if (orderCount >= 5) {
+            return amount.multiply(BigDecimal.valueOf(0.05)); // 5% discount
+        }
+
+        return BigDecimal.ZERO;
     }
 }

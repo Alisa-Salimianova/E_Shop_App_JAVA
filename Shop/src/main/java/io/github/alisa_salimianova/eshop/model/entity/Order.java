@@ -1,54 +1,102 @@
 package io.github.alisa_salimianova.eshop.model.entity;
 
 import io.github.alisa_salimianova.eshop.model.enums.OrderStatus;
+import lombok.*;
 
+import jakarta.persistence.*;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Применение инвариантов: проверка состояния при изменении статуса.
- */
+@Entity
+@Table(name = "orders")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class Order {
-    private final int id;
-    private final User user;
-    private final List<Product> products;
-    private final LocalDateTime orderDate;
-    private OrderStatus status;
-    private final double totalAmount;
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-    public Order(int id, User user, List<Product> products) {
-        this.id = id;
-        this.user = user;
-        this.products = new ArrayList<>(products);
-        this.orderDate = LocalDateTime.now();
-        this.status = OrderStatus.PROCESSING;
-        this.totalAmount = calculateTotalAmount(products);
-    }
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
 
-    // Геттеры
-    public int getId() { return id; }
-    public User getUser() { return user; }
-    public List<Product> getProducts() { return new ArrayList<>(products); }
-    public LocalDateTime getOrderDate() { return orderDate; }
-    public OrderStatus getStatus() { return status; }
-    public double getTotalAmount() { return totalAmount; }
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    private List<OrderItem> items = new ArrayList<>();
 
-    public void setStatus(OrderStatus status) {
-        // Запрещаем менять статус доставленного заказа
-        if (this.status == OrderStatus.DELIVERED && status != OrderStatus.DELIVERED) {
-            throw new IllegalStateException("Нельзя изменить статус доставленного заказа");
+    @Column(nullable = false, precision = 10, scale = 2)
+    private BigDecimal totalAmount;
+
+    @Column(precision = 10, scale = 2)
+    private BigDecimal discountAmount;
+
+    @Column(nullable = false, precision = 10, scale = 2)
+    private BigDecimal finalAmount;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    @Builder.Default
+    private OrderStatus status = OrderStatus.PROCESSING;
+
+    @Column(nullable = false, updatable = false)
+    @Builder.Default
+    private LocalDateTime orderDate = LocalDateTime.now();
+
+    private LocalDateTime deliveryDate;
+    private String shippingAddress;
+    private String paymentMethod;
+    private String deliveryMethod;
+
+    @PrePersist
+    protected void onCreate() {
+        if (orderDate == null) {
+            orderDate = LocalDateTime.now();
         }
-        this.status = status;
+        if (finalAmount == null) {
+            finalAmount = totalAmount.subtract(discountAmount != null ? discountAmount : BigDecimal.ZERO);
+        }
     }
 
-    private double calculateTotalAmount(List<Product> products) {
-        return products.stream().mapToDouble(Product::getPrice).sum();
-    }
+    @Entity
+    @Table(name = "order_items")
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class OrderItem {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
 
-    @Override
-    public String toString() {
-        return String.format("Заказ #%d - %s - $%.2f (%s)",
-                id, status.getDisplayName(), totalAmount, orderDate);
+        @ManyToOne(fetch = FetchType.LAZY)
+        @JoinColumn(name = "order_id", nullable = false)
+        private Order order;
+
+        @ManyToOne(fetch = FetchType.LAZY)
+        @JoinColumn(name = "product_id", nullable = false)
+        private Product product;
+
+        @Column(nullable = false)
+        private Integer quantity;
+
+        @Column(nullable = false, precision = 10, scale = 2)
+        private BigDecimal unitPrice;
+
+        @Column(nullable = false, precision = 10, scale = 2)
+        private BigDecimal subtotal;
+
+        @PrePersist
+        @PreUpdate
+        protected void calculateSubtotal() {
+            if (unitPrice != null && quantity != null) {
+                subtotal = unitPrice.multiply(BigDecimal.valueOf(quantity));
+            }
+        }
     }
 }

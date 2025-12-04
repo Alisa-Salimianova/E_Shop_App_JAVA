@@ -2,7 +2,7 @@ package io.github.alisa_salimianova.eshop.strategy.payment;
 
 import io.github.alisa_salimianova.eshop.service.interfaces.PaymentStrategy;
 
-public class PayPalPayment implements PaymentStrategy {
+public class PayPalPaymentStrategy implements PaymentStrategy {
 
     @Override
     public boolean processPayment(double amount) {

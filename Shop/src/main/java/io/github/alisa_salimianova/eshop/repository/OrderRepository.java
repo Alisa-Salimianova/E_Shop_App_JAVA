@@ -2,43 +2,35 @@ package io.github.alisa_salimianova.eshop.repository;
 
 import io.github.alisa_salimianova.eshop.model.entity.Order;
 import io.github.alisa_salimianova.eshop.model.entity.User;
+import io.github.alisa_salimianova.eshop.model.enums.OrderStatus;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
 
-import java.util.ArrayList;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Optional;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 
-public class OrderRepository {
-    private final List<Order> orders;
-    private final AtomicInteger idCounter;
+@Repository
+public interface OrderRepository extends JpaRepository<Order, Long> {
 
-    public OrderRepository() {
-        this.orders = new ArrayList<>();
-        this.idCounter = new AtomicInteger(1);
-    }
+    List<Order> findByUser(User user);
 
-    public List<Order> findAll() {
-        return new ArrayList<>(orders);
-    }
+    Page<Order> findByUser(User user, Pageable pageable);
 
-    public Optional<Order> findById(int id) {
-        return orders.stream()
-                .filter(order -> order.getId() == id)
-                .findFirst();
-    }
+    List<Order> findByStatus(OrderStatus status);
 
-    public List<Order> findByUserId(int userId) {
-        return orders.stream()
-                .filter(order -> order.getUser().getId() == userId)
-                .collect(Collectors.toList());
-    }
+    List<Order> findByOrderDateBetween(LocalDateTime start, LocalDateTime end);
 
-    public void save(Order order) {
-        orders.add(order);
-    }
+    @Query("SELECT o FROM Order o WHERE o.user.id = :userId AND o.status = :status")
+    List<Order> findByUserIdAndStatus(@Param("userId") Long userId,
+                                      @Param("status") OrderStatus status);
 
-    public int getNextId() {
-        return idCounter.getAndIncrement();
-    }
+    @Query("SELECT SUM(o.finalAmount) FROM Order o WHERE o.user.id = :userId")
+    BigDecimal getTotalSpentByUser(@Param("userId") Long userId);
+
+    Long countByUser(User user);
 }
